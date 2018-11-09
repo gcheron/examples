@@ -28,23 +28,39 @@ device = torch.device("cuda" if args.cuda else "cpu")
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=True, download=True,
+    #datasets.MNIST('../data', train=True, download=True,
+    datasets.CIFAR10('../data', train=True, download=True,
                    transform=transforms.ToTensor()),
     batch_size=args.batch_size, shuffle=True, **kwargs)
 test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=False, transform=transforms.ToTensor()),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
+    #datasets.MNIST('../data', train=False, transform=transforms.ToTensor()),
+    datasets.CIFAR10('../data', train=False, transform=transforms.ToTensor()),
+    batch_size=args.batch_size, shuffle=False, **kwargs)
+    #batch_size=args.batch_size, shuffle=True, **kwargs)
 
+# MNIST
+#wsize = 28
+#csize = 1
+#imsize = 784
+#fcsize = 400
+#codesize = 20
+
+# CIFAR10
+wsize = 32
+csize = 3
+imsize = 3072
+fcsize = 2048
+codesize = 256
 
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
 
-        self.fc1 = nn.Linear(784, 400)
-        self.fc21 = nn.Linear(400, 20)
-        self.fc22 = nn.Linear(400, 20)
-        self.fc3 = nn.Linear(20, 400)
-        self.fc4 = nn.Linear(400, 784)
+        self.fc1 = nn.Linear(imsize, fcsize)
+        self.fc21 = nn.Linear(fcsize, codesize)
+        self.fc22 = nn.Linear(fcsize, codesize)
+        self.fc3 = nn.Linear(codesize, fcsize)
+        self.fc4 = nn.Linear(fcsize, imsize)
 
     def encode(self, x):
         h1 = F.relu(self.fc1(x))
@@ -60,18 +76,18 @@ class VAE(nn.Module):
         return torch.sigmoid(self.fc4(h3))
 
     def forward(self, x):
-        mu, logvar = self.encode(x.view(-1, 784))
+        mu, logvar = self.encode(x.view(-1, imsize))
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
 
 model = VAE().to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
-
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=100, factor=0.7, verbose=True, threshold=0.05)
 
 # Reconstruction + KL divergence losses summed over all elements and batch
 def loss_function(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction='sum')
+    BCE = F.binary_cross_entropy(recon_x, x.view(-1, imsize), reduction='sum')
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
@@ -98,9 +114,17 @@ def train(epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader),
                 loss.item() / len(data)))
+        if batch_idx == 0:
+            n = min(data.size(0), 8)
+            comparison = torch.cat([data[:n],
+                                  recon_batch.view(args.batch_size, csize, wsize, wsize)[:n]])
+            save_image(comparison.cpu(),
+                     'results/train_reconstruction_' + str(epoch) + '.png', nrow=n)
+
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
           epoch, train_loss / len(train_loader.dataset)))
+    scheduler.step(train_loss / len(train_loader.dataset))
 
 
 def test(epoch):
@@ -114,7 +138,7 @@ def test(epoch):
             if i == 0:
                 n = min(data.size(0), 8)
                 comparison = torch.cat([data[:n],
-                                      recon_batch.view(args.batch_size, 1, 28, 28)[:n]])
+                                      recon_batch.view(args.batch_size, csize, wsize, wsize)[:n]])
                 save_image(comparison.cpu(),
                          'results/reconstruction_' + str(epoch) + '.png', nrow=n)
 
@@ -126,7 +150,7 @@ if __name__ == "__main__":
         train(epoch)
         test(epoch)
         with torch.no_grad():
-            sample = torch.randn(64, 20).to(device)
+            sample = torch.randn(64, codesize).to(device)
             sample = model.decode(sample).cpu()
-            save_image(sample.view(64, 1, 28, 28),
+            save_image(sample.view(64, csize, wsize, wsize),
                        'results/sample_' + str(epoch) + '.png')
